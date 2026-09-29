@@ -1,0 +1,220 @@
+{
+  "rules": [
+    {
+      "id": "R001",
+      "name": "GSTIN Verification",
+      "type": "keyword_presence",
+      "validator": "gstin",
+      "keywords": [
+        "GSTIN",
+        "GST Number",
+        "GST Registration",
+        "GST No"
+      ],
+      "expected": "Valid 15-character GSTIN must be present and not negated",
+      "severity": "critical",
+      "suggestion": "Include a valid 15-digit GSTIN (format: 22AAAAA0000A1Z5) in the bid document. Ensure it is not marked as 'not available' or 'N/A'."
+    },
+    {
+      "id": "R002",
+      "name": "PAN Verification",
+      "type": "keyword_presence",
+      "validator": "pan",
+      "keywords": [
+        "PAN",
+        "Permanent Account Number",
+        "PAN No"
+      ],
+      "expected": "Valid 10-character PAN must be present and not negated",
+      "severity": "critical",
+      "suggestion": "Include the bidder's 10-character PAN (format: ABCDE1234F) in the bid document."
+    },
+    {
+      "id": "R003",
+      "name": "Bid Validity Period",
+      "type": "value_range",
+      "extraction_pattern": "(?:bid\\s*)?validity[:\\s]*(\\d[\\d,]*)\\s*days",
+      "min_value": 90,
+      "expected": "Bid validity must be at least 90 days",
+      "severity": "critical",
+      "suggestion": "State a bid validity period of at least 90 days (e.g. 'Bid Validity: 120 days')."
+    },
+    {
+      "id": "R004",
+      "name": "EMD / Earnest Money Deposit",
+      "type": "keyword_presence",
+      "validator": "emd",
+      "keywords": [
+        "EMD",
+        "Earnest Money",
+        "Bid Security",
+        "Earnest Money Deposit"
+      ],
+      "expected": "EMD or Bid Security must be mentioned with an actual amount",
+      "severity": "critical",
+      "suggestion": "Include details of Earnest Money Deposit (EMD) or Bid Security with the actual amount enclosed."
+    },
+    {
+      "id": "R005",
+      "name": "Authorised Signatory",
+      "type": "keyword_presence",
+      "validator": "signatory",
+      "keywords": [
+        "Authorised Signatory",
+        "Authorized Signatory",
+        "Authorised Representative",
+        "Authorized Representative",
+        "Signatory"
+      ],
+      "expected": "Document must be signed by an authorised signatory — keyword must not be negated",
+      "severity": "critical",
+      "suggestion": "Include the name and designation of the Authorised Signatory. The signatory must not be described as absent or missing."
+    },
+    {
+      "id": "R006",
+      "name": "Annual Turnover",
+      "type": "value_range",
+      "extraction_pattern": "(?:annual\\s*)?turnover[:\\s]*(?:Rs\\.?|INR|₹)?\\s*(\\d[\\d,]*)",
+      "min_value": 500000,
+      "expected": "Annual turnover must be at least ₹5,00,000",
+      "severity": "warning",
+      "suggestion": "Declare an annual turnover of at least ₹5,00,000 with supporting documents (e.g. audited balance sheet)."
+    },
+    {
+      "id": "R007",
+      "name": "Udyam / MSME Registration",
+      "type": "keyword_presence",
+      "keywords": [
+        "Udyam",
+        "MSME",
+        "Udyam Registration",
+        "MSME Certificate",
+        "UDYAM-"
+      ],
+      "expected": "Udyam/MSME registration should be mentioned if applicable",
+      "severity": "info",
+      "suggestion": "If the bidder is an MSME, include the Udyam Registration Number (format: UDYAM-XX-00-0000000)."
+    },
+    {
+      "id": "R008",
+      "name": "Delivery Period",
+      "type": "keyword_presence",
+      "keywords": [
+        "Delivery Period",
+        "Delivery Timeline",
+        "Delivery Schedule",
+        "Delivery Days",
+        "Dispatch"
+      ],
+      "expected": "Delivery period/timeline must be stated",
+      "severity": "warning",
+      "suggestion": "Clearly state the delivery period or dispatch timeline in the bid (e.g. 'Delivery within 30 days of PO')."
+    },
+    {
+      "id": "R009",
+      "name": "Make in India Compliance",
+      "type": "keyword_presence",
+      "keywords": [
+        "Make in India",
+        "Local Content",
+        "Domestic Value Addition",
+        "Class I",
+        "Class II"
+      ],
+      "expected": "Make in India / local content declaration if applicable",
+      "severity": "info",
+      "suggestion": "Include a Make in India declaration with local content percentage if applicable."
+    },
+    {
+      "id": "R010",
+      "name": "Warranty / Guarantee",
+      "type": "keyword_presence",
+      "keywords": [
+        "Warranty",
+        "Guarantee",
+        "Warranty Period",
+        "Guarantee Period"
+      ],
+      "expected": "Warranty or guarantee terms must be specified",
+      "severity": "warning",
+      "suggestion": "Specify warranty/guarantee period and terms in the bid (e.g. '12 months warranty from date of delivery')."
+    },
+    {
+      "id": "R011",
+      "name": "OEM Authorisation",
+      "type": "keyword_presence",
+      "keywords": [
+        "OEM",
+        "Original Equipment Manufacturer",
+        "OEM Authorization",
+        "OEM Certificate",
+        "OEM Authorisation"
+      ],
+      "expected": "OEM authorisation certificate for resellers",
+      "severity": "warning",
+      "suggestion": "If the bidder is a reseller, include an OEM Authorisation Certificate issued by the manufacturer."
+    },
+    {
+      "id": "R012",
+      "name": "Payment Terms",
+      "type": "keyword_presence",
+      "keywords": [
+        "Payment Terms",
+        "Payment Conditions",
+        "Payment Schedule",
+        "Payment within"
+      ],
+      "expected": "Payment terms must be clearly defined",
+      "severity": "info",
+      "suggestion": "State payment terms (e.g. 'payment within 30 days of delivery and acceptance')."
+    },
+    {
+      "id": "R013",
+      "name": "Technical Specifications",
+      "type": "keyword_presence",
+      "keywords": [
+        "Technical Specification",
+        "Technical Specs",
+        "Specifications",
+        "Tech Spec",
+        "Product Specification"
+      ],
+      "expected": "Technical specifications must be provided",
+      "severity": "warning",
+      "suggestion": "Include detailed technical specifications matching the GeM catalogue listing."
+    },
+    {
+      "id": "R014",
+      "name": "Past Performance / Experience",
+      "type": "keyword_presence",
+      "keywords": [
+        "Past Performance",
+        "Prior Experience",
+        "Previous Experience",
+        "Work Experience",
+        "Track Record",
+        "Purchase Order"
+      ],
+      "expected": "Evidence of past performance or experience",
+      "severity": "info",
+      "suggestion": "Include evidence of past performance — prior purchase orders or client references."
+    },
+    {
+      "id": "R015",
+      "name": "Compliance Certificates",
+      "type": "keyword_presence",
+      "keywords": [
+        "ISO",
+        "BIS",
+        "ISI",
+        "CE Mark",
+        "Compliance Certificate",
+        "Quality Certificate",
+        "Test Report"
+      ],
+      "expected": "Relevant compliance/quality certificates must be attached",
+      "severity": "warning",
+      "suggestion": "Attach relevant compliance certificates (ISO, BIS, CE, test reports) as required by the tender."
+    }
+  ]
+}
