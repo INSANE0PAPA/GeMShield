@@ -427,7 +427,6 @@ GeMShield/
 ├── references/                  # build spec, data.gov.in guide, flowchart, design references
 ├── docker-compose.yml
 ├── .env.example
-├── BUILD_STATUS.md
 └── README.md
 ```
 
