@@ -19,7 +19,7 @@ export function DataGovPanel({ onUse }: { onUse: (s: DataGovSource) => void }) {
   const [q, setQ] = useState("tenders"); const [open, setOpen] = useState<string | null>(null);
   const results = useMutation({ mutationFn: (query: string) => searchFn({ data: { q: query } }), onError: (e) => toast.error(e.message) });
   const imp = useMutation({ mutationFn: (v: { resourceId: string; title?: string }) => importFn({ data: v }), onSuccess: async (r) => { await qc.invalidateQueries({ queryKey: ["data-gov-imports"] }); setOpen(r.id); toast.success("Dataset imported with source and fingerprint"); }, onError: (e) => toast.error(e.message) });
-  const imports = useQuery({ queryKey: ["data-gov-imports"], queryFn: async () => { const { data, error } = await supabase.from("data_gov_imports").select("*").order("created_at", { ascending: false }).limit(20); if (error) throw error; return data; } });
+  const imports = useQuery({ queryKey: ["data-gov-imports"], queryFn: async () => { const data = await apiFetch<any[]>("/sources/data-gov/imports"); return data; } });
   const current = imports.data?.find((i) => i.id === open);
   return <div className="space-y-3 text-[12px]">
     <form onSubmit={(e) => { e.preventDefault(); if (q.trim().length >= 2) results.mutate(q.trim()); }} className="flex gap-2"><Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search data.gov.in, e.g. tenders, procurement" className="h-9" /><Button size="sm" className="h-9" disabled={results.isPending}><Search className="mr-1 h-4 w-4" />Search</Button></form>

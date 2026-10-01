@@ -36,6 +36,7 @@ def list_audit_logs(
     limit: int = Query(50, ge=1, le=2000),
     action: Optional[str] = None,
     entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
     actor_id: Optional[str] = None,
     user: AuthUser = Depends(require_roles("admin", "procurement_officer", "reviewer")),
     db: Session = Depends(get_db),
@@ -47,6 +48,8 @@ def list_audit_logs(
         query = query.filter(AuditLog.action.ilike(f"%{action}%"))
     if entity_type:
         query = query.filter(AuditLog.entity_type == entity_type)
+    if entity_id:
+        query = query.filter(AuditLog.entity_id == entity_id)
     if actor_id:
         query = query.filter(AuditLog.actor_id == actor_id)
 

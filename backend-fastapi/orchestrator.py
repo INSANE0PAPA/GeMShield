@@ -119,6 +119,29 @@ def run_compliance_check(job_id: int, file_path: str):
         log.info("[job %d] Score=%.1f  Verdict=%s", job_id, score, verdict)
         fix_guide = build_fix_guide(rule_results)
         _persist_results(db, job, rule_results, rag_verdicts, score, verdict, extraction)
+        
+        import uuid
+        from models import Notification, AuditLog
+        
+        # Add Audit Logs for timeline
+        db.add(AuditLog(id=str(uuid.uuid4()), action="Document Extracted", summary=f"Extracted {extraction['page_count']} pages and {extraction['char_count']} characters.", entity_id=str(job_id), actor_role="system"))
+        db.add(AuditLog(id=str(uuid.uuid4()), action="Rule Engine Completed", summary=f"Checked {rule_summary['rules_checked']} deterministic rules. {rule_summary['rules_passed']} passed.", entity_id=str(job_id), actor_role="system"))
+        db.add(AuditLog(id=str(uuid.uuid4()), action="AI Reasoning Completed", summary=f"Gemini grounded evaluation completed. Overall score: {score}%.", entity_id=str(job_id), actor_role="system"))
+        db.commit()
+
+        if job.vendor_user_id:
+            notif = Notification(
+                id=str(uuid.uuid4()),
+                user_id=job.vendor_user_id,
+                title="Compliance Check Completed",
+                body=f"Your document '{job.file_name}' scored {score}% ({verdict}).",
+                category="compliance",
+                severity="success" if verdict == "compliant" else "warning",
+                link="/vendor/bids"
+            )
+            db.add(notif)
+            db.commit()
+            
         log.info("[job %d] Persisted. Pipeline complete.", job_id)
     except Exception as exc:
         log.error("[job %d] Pipeline error: %s\n%s", job_id, exc, traceback.format_exc())

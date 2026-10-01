@@ -23,7 +23,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       if (event === "SIGNED_IN" && next && typeof window !== "undefined" && !sessionStorage.getItem("gs-login-" + next.user.id)) {
         sessionStorage.setItem("gs-login-" + next.user.id, "1");
-        void supabase.from("audit_logs").insert({ actor_id: next.user.id, actor_email: next.user.email ?? null, action: "Signed in", entity_type: "User Management", metadata: { severity: "info" } });
+        void apiFetch("/api/audit", { method: "POST", body: JSON.stringify({ action: "Signed in", entity_type: "User Management" }) });
       }
       if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
         if (event === "SIGNED_OUT") {

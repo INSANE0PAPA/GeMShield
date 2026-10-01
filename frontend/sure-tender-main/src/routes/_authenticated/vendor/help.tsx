@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { askAssistant } from "@/lib/compliance.functions";
 import { useSession } from "@/hooks/useSession";
 import { useLanguage } from "@/lib/language";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_authenticated/vendor/help")({
   head: () => ({
@@ -51,7 +52,7 @@ function VendorHelp() {
     onError: (e: Error) => { toast.error(e.message); setMsgs((m) => [...m, { role: "assistant", content: `Sorry — I couldn't answer right now (${e.message}).`, at: new Date().toISOString() }]); },
   });
   const go = (q: string) => { if (!send.isPending && q.trim()) { send.mutate(q.trim()); chatRef.current?.scrollIntoView({ behavior: "smooth" }); } };
-  async function ticket() { const text = window.prompt("Describe your issue for the support team:"); if (!text?.trim() || !session) return; const { error } = await supabase.from("audit_logs").insert({ actor_id: session.user.id, actor_email: session.user.email ?? null, action: "Raised support ticket", entity_type: "Help & Guidelines", summary: text.slice(0, 500), metadata: { severity: "info" } }); if (error) toast.error(error.message); else toast.success("Support ticket raised — the procurement team can see it in the audit log."); }
+  async function ticket() { const text = window.prompt("Describe your issue for the support team:"); if (!text?.trim() || !session) return; try { await apiFetch("/api/helpdesk/tickets", { method: "POST", body: JSON.stringify({ subject: "Support Request", body: text.slice(0, 500), category: "general" }) }); toast.success("Support ticket raised — the procurement team will review it."); } catch (e: any) { toast.error(e.message); } }
   const time = (d: string) => new Date(d).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
   const topics = TOPICS.filter((t) => t.toLowerCase().includes(filter.toLowerCase()));
 

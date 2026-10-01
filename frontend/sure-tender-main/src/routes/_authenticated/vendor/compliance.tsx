@@ -8,13 +8,13 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states/DataStates";
 import { ComplianceRunView, STAGE_LABEL, VERDICT_LABEL, verdictTone } from "@/components/compliance/ComplianceRunView";
-import { runComplianceCheck } from "@/lib/compliance.functions";
 import { fmtDateTime, sha256File } from "@/lib/procurement";
 import { useSession } from "@/hooks/useSession";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_authenticated/vendor/compliance")({
-  validateSearch: z.object({ run: z.string().uuid().optional() }),
+  validateSearch: z.object({ run: z.union([z.string(), z.number()]).transform(String).optional() }),
   head: () => ({
     meta: [
       { title: "Compliance Check — GeMShield" },
@@ -44,27 +44,36 @@ function UploadPanel() {
   const uid = session?.user.id;
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const run = runComplianceCheck;
   const inputRef = useRef<HTMLInputElement>(null);
   const [bidId, setBidId] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const bids = useQuery({ queryKey: ["my-bids-for-check", uid], enabled: Boolean(uid), queryFn: async () => { const { data, error } = await supabase.from("bids").select("id,status,tender_id,tender:tenders(title,reference_no)").eq("vendor_user_id", uid!).order("updated_at", { ascending: false }); if (error) throw error; return data; } });
+  const bids = useQuery({ queryKey: ["my-bids-for-check", uid], enabled: Boolean(uid), queryFn: async () => { 
+    return apiFetch<any[]>(`/api/bids/`); 
+  } });
   const start = useMutation({
     mutationFn: async () => {
       if (!file || !uid) throw new Error("Choose a PDF document first.");
       if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) throw new Error("Only PDF documents can be checked.");
       if (file.size > 20 * 1024 * 1024) throw new Error("PDF must be 20 MB or smaller.");
-      const bid = bids.data?.find((b) => b.id === bidId);
-      const path = `${uid}/checks/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-      const { error: se } = await supabase.storage.from("bid-documents").upload(path, file, { contentType: "application/pdf" }); if (se) throw se;
-      const { data: row, error } = await supabase.from("compliance_runs").insert({ file_path: path, file_name: file.name, size_bytes: file.size, sha256: await sha256File(file), bid_id: bid?.id ?? null, tender_id: bid?.tender_id ?? null }).select("id").single();
-      if (error) throw error;
-      return row.id;
+      
+      const formData = new FormData();
+      formData.append("file", file);
+      if (bidId) formData.append("bid_id", bidId);
+
+      const token = session.access_token;
+      const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/verification-runs/upload`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      return data.id;
     },
     onSuccess: (id) => {
       setFile(null); qc.invalidateQueries({ queryKey: ["compliance-runs"] });
       navigate({ to: "/vendor/compliance", search: { run: id } });
-      run({ data: { runId: id } }).then(() => toast.success("Compliance check completed")).catch((e: Error) => toast.error(e.message)).finally(() => qc.invalidateQueries({ queryKey: ["compliance-run", id] }));
+      toast.success("Compliance check started");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -85,11 +94,13 @@ function UploadPanel() {
 
 function RunList() {
   const { session } = useSession();
-  const q = useQuery({ queryKey: ["compliance-runs", "mine", session?.user.id], enabled: Boolean(session), refetchInterval: 4000, queryFn: async () => { const { data, error } = await supabase.from("compliance_runs").select("id,file_name,status,score,verdict,officer_status,created_at,tender:tenders(title,reference_no)").eq("vendor_user_id", session!.user.id).order("created_at", { ascending: false }); if (error) throw error; return data; } });
+  const q = useQuery({ queryKey: ["compliance-runs", "mine", session?.user.id], enabled: Boolean(session), refetchInterval: 4000, queryFn: async () => { 
+    return apiFetch<any[]>(`/api/verification-runs`); 
+  } });
   if (q.isPending) return <LoadingState label="Loading your checks…" />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
-  if (!q.data.length) return <EmptyState title="No compliance checks yet" description="Upload a bid PDF above to run your first check." />;
+  if (!q.data?.length) return <EmptyState title="No compliance checks yet" description="Upload a bid PDF above to run your first check." />;
   return <div className="overflow-x-auto rounded-xl border border-border bg-card"><table className="w-full text-xs"><thead className="bg-muted/50 text-left text-muted-foreground"><tr>{["Document", "Tender", "Checked", "Stage", "Score", "Result", "Department", ""].map((h) => <th key={h} className="px-3 py-2 font-medium">{h}</th>)}</tr></thead><tbody>
-    {q.data.map((r) => { const t = r.tender as { title: string; reference_no: string } | null; return <tr key={r.id} className="border-t border-border"><td className="px-3 py-2 font-medium">{r.file_name}</td><td className="px-3 py-2">{t ? `${t.reference_no}` : "—"}</td><td className="px-3 py-2">{fmtDateTime(r.created_at)}</td><td className="px-3 py-2">{STAGE_LABEL[r.status]}</td><td className="px-3 py-2 font-semibold">{r.score ?? "—"}</td><td className="px-3 py-2">{r.verdict && <span className={cn("rounded-md border px-2 py-0.5 text-[11px] font-semibold", verdictTone(r.verdict))}>{VERDICT_LABEL[r.verdict]}</span>}</td><td className="px-3 py-2 capitalize">{r.officer_status?.replace(/_/g, " ") ?? "Pending"}</td><td className="px-3 py-2"><Button size="sm" variant="outline" className="h-7 text-xs" asChild><Link to="/vendor/compliance" search={{ run: r.id }}>View</Link></Button></td></tr>; })}
+    {q.data.map((r) => { const t = r.tender as { title: string; reference_no: string } | null; return <tr key={r.id} className="border-t border-border"><td className="px-3 py-2 font-medium">{r.file_name}</td><td className="px-3 py-2">{t ? `${t.reference_no}` : "—"}</td><td className="px-3 py-2">{fmtDateTime(r.created_at)}</td><td className="px-3 py-2">{STAGE_LABEL[r.status] || r.status}</td><td className="px-3 py-2 font-semibold">{r.score ?? "—"}</td><td className="px-3 py-2">{r.verdict && <span className={cn("rounded-md border px-2 py-0.5 text-[11px] font-semibold", verdictTone(r.verdict))}>{VERDICT_LABEL[r.verdict] || r.verdict}</span>}</td><td className="px-3 py-2 capitalize">{r.officer_status?.replace(/_/g, " ") ?? "Pending"}</td><td className="px-3 py-2"><Button size="sm" variant="outline" className="h-7 text-xs" asChild><Link to="/vendor/compliance" search={{ run: String(r.id) }}>View</Link></Button></td></tr>; })}
   </tbody></table></div>;
 }

@@ -24,7 +24,11 @@ class ComplianceJob(Base):
     __tablename__ = "compliance_jobs"
 
     id               = Column(Integer, primary_key=True, index=True)
-    filename         = Column(String, nullable=False)          # original filename
+    vendor_user_id   = Column(String, nullable=True, index=True)
+    bid_id           = Column(String, ForeignKey("bids.id"), nullable=True)
+    tender_id        = Column(String, ForeignKey("tenders.id"), nullable=True)
+    bid_document_id  = Column(Integer, ForeignKey("bid_documents.id"), nullable=True)
+    file_name        = Column(String, nullable=False)          # original filename
     stored_path      = Column(String, nullable=True)           # UUID-prefixed path on disk
     status           = Column(String, default="queued")        # queued|processing|completed|failed
     score            = Column(Float, nullable=True)            # 0-100
@@ -32,9 +36,15 @@ class ComplianceJob(Base):
     page_count       = Column(Integer, nullable=True)          # pages extracted
     char_count       = Column(Integer, nullable=True)          # characters extracted
     processing_error = Column(Text, nullable=True)             # error message if status=failed
+    officer_status   = Column(String, nullable=True, default="pending") # pending|needs_review|approved|rejected
+    officer_note     = Column(Text, nullable=True)
+    officer_id       = Column(String, nullable=True)
+    officer_decided_at= Column(DateTime, nullable=True)
     created_at       = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at     = Column(DateTime, nullable=True)
-
+    ai_summary       = Column(Text, nullable=True)
+    ai_confidence    = Column(Float, nullable=True)
+    ai_recommendations = Column(JSON, nullable=True)
 
 class RuleResult(Base):
     """One row per deterministic rule checked per job."""
@@ -73,6 +83,12 @@ class RulebookChunk(Base):
     id        = Column(Integer, primary_key=True, index=True)
     content   = Column(Text, nullable=False)
     embedding = Column(Vector(384))
+    
+    # Metadata fields
+    document_name = Column(String, nullable=True)
+    page_number = Column(Integer, nullable=True)
+    tender_id = Column(String, nullable=True)
+    clause_section = Column(String, nullable=True)
 
 
 class UserRole(Base):
@@ -109,8 +125,16 @@ class Profile(Base):
     phone = Column(String, nullable=True)
     organisation = Column(String, nullable=True)
     approval_status = Column(String, default="pending")
+    designation = Column(String, nullable=True)
+    ministry_department = Column(String, nullable=True)
+    employee_official_id = Column(String, nullable=True)
+    office_location = Column(String, nullable=True)
+    timezone = Column(String, nullable=True, default="Asia/Kolkata")
+    language = Column(String, nullable=True, default="en")
+    theme = Column(String, nullable=True, default="system")
+    density = Column(String, nullable=True, default="default")
+    notification_prefs = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
 class Department(Base):
     __tablename__ = "departments"
     id = Column(Integer, primary_key=True, index=True)
@@ -162,8 +186,11 @@ class TenderDocument(Base):
     __tablename__ = "tender_documents"
     id = Column(Integer, primary_key=True, index=True)
     tender_id = Column(String, ForeignKey("tenders.id"))
-    filename = Column(String, nullable=False)
-    stored_path = Column(String, nullable=True)
+    name = Column(String, nullable=False)
+    file_path = Column(String, nullable=True)
+    mime_type = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    sha256 = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class SavedTender(Base):
@@ -177,24 +204,57 @@ class Bid(Base):
     __tablename__ = "bids"
     id = Column(String, primary_key=True)
     tender_id = Column(String, ForeignKey("tenders.id"))
-    vendor_id = Column(String, ForeignKey("vendors.id"))
-    status = Column(String, default="draft") # draft|submitted|finalized
+    vendor_id = Column(String, ForeignKey("vendors.id"), nullable=True)
+    vendor_user_id = Column(String, nullable=True, index=True)  # Supabase auth UID
+    status = Column(String, default="draft")  # draft|submitted|under_review|clarification_required|completed
+    application = Column(JSON, nullable=True)  # Four-stage application form data
+    quoted_amount = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)  # Technical proposal text
+    stage = Column(String, default="basic")  # Current apply stage: basic|documents|bid|review
     submitted_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class BidDocument(Base):
     __tablename__ = "bid_documents"
     id = Column(Integer, primary_key=True, index=True)
     bid_id = Column(String, ForeignKey("bids.id"))
-    filename = Column(String, nullable=False)
-    stored_path = Column(String, nullable=True)
+    doc_type = Column(String, nullable=True)  # registration|gst|pan|authorization|past_performance|oem|other
+    name = Column(String, nullable=False)
+    filename = Column(String, nullable=True) # Legacy DB column
+    file_path = Column(String, nullable=True)
+    stored_path = Column(String, nullable=True) # Legacy DB column
+    mime_type = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
     sha256 = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class ComplianceRuleVersion(Base):
     __tablename__ = "compliance_rule_versions"
     id = Column(String, primary_key=True)
-    version_name = Column(String, nullable=False)
+    version = Column(String, nullable=False)
+    status = Column(String, default="draft")
+    rules = Column(JSON, nullable=True)
+    change_summary = Column(Text, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class HumanReviewCase(Base):
+    __tablename__ = "human_review_cases"
+    id = Column(String, primary_key=True)
+    run_id = Column(Integer, ForeignKey("compliance_jobs.id"), nullable=False, index=True)
+    bid_id = Column(String, ForeignKey("bids.id"), nullable=True)
+    tender_id = Column(String, ForeignKey("tenders.id"), nullable=True)
+    vendor_user_id = Column(String, nullable=False, index=True)
+    status = Column(String, default="pending") # pending | in_progress | resolved
+    priority = Column(String, default="medium") # high | medium | low
+    trigger_reason = Column(Text, nullable=False)
+    resolution = Column(String, nullable=True) # confirmed | overridden | clarified | escalated
+    justification = Column(Text, nullable=True)
+    assigned_to = Column(String, nullable=True)
+    resolved_by = Column(String, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class ReviewDecision(Base):

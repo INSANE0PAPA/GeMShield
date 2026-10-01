@@ -23,6 +23,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 
 security = HTTPBearer(auto_error=False)
 
+jwks_url = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+jwks_client = jwt.PyJWKClient(jwks_url)
+
 
 class AuthUser:
     """Authenticated user extracted from a valid Supabase JWT."""
@@ -47,14 +50,18 @@ async def get_current_user(
 
     token = credentials.credentials
     try:
-        # Supabase JWTs are signed with the project's JWT secret
+        # Supabase JWTs are asymmetrically signed, fetch the public key via JWKS
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
         payload = jwt.decode(
             token,
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
+            signing_key.key,
+            algorithms=["ES256", "RS256", "HS256"],
             audience="authenticated",
-            options={"verify_aud": True} if SUPABASE_JWT_SECRET else {"verify_signature": False},
+            options={"verify_aud": True},
         )
+    except jwt.PyJWKClientError as e:
+        log.warning("JWKS fetching failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid token signing key")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError as e:

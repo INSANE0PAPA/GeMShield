@@ -38,6 +38,10 @@ def retrieve_rules(document_text: str, top_k: int = 5) -> list[dict]:
             session.query(
                 RulebookChunk.id,
                 RulebookChunk.content,
+                RulebookChunk.document_name,
+                RulebookChunk.page_number,
+                RulebookChunk.tender_id,
+                RulebookChunk.clause_section,
                 RulebookChunk.embedding.l2_distance(query_embedding).label("distance"),
             )
             .order_by(RulebookChunk.embedding.l2_distance(query_embedding))
@@ -45,7 +49,15 @@ def retrieve_rules(document_text: str, top_k: int = 5) -> list[dict]:
             .all()
         )
     return [
-        {"id": r.id, "content": r.content, "distance": float(r.distance)}
+        {
+            "id": r.id, 
+            "content": r.content, 
+            "distance": float(r.distance),
+            "document_name": r.document_name,
+            "page_number": r.page_number,
+            "tender_id": r.tender_id,
+            "clause_section": r.clause_section
+        }
         for r in rows
     ]
 _SYSTEM_PROMPT = textwrap.dedent("""

@@ -312,8 +312,10 @@ async def upload_tender_document(
     
     doc = TenderDocument(
         tender_id=tender_id,
-        filename=file.filename,
-        stored_path=stored_path,
+        name=file.filename,
+        file_path=stored_path,
+        mime_type=file.content_type,
+        size_bytes=file.size,
     )
     db.add(doc)
     db.commit()
@@ -321,7 +323,7 @@ async def upload_tender_document(
     
     return {
         "id": doc.id,
-        "filename": doc.filename,
+        "filename": doc.name,
         "message": "Document uploaded"
     }
 
@@ -337,8 +339,8 @@ def delete_tender_document(
         raise HTTPException(status_code=404, detail="Document not found")
     
     # Try to delete the physical file
-    if doc.stored_path:
-        file_path = os.path.join(os.path.dirname(__file__), "..", "uploads", doc.stored_path)
+    if doc.file_path:
+        file_path = os.path.join(os.path.dirname(__file__), "..", "uploads", doc.file_path)
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)

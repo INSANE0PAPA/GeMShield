@@ -42,7 +42,7 @@ function CreateTender() {
     ]);
     return { tender: data, docs: docs ?? [] };
   } });
-  const depts = useQuery({ queryKey: ["dept-options"], queryFn: async () => { const { data: a } = await supabase.from("departments").select("name"); const tenders = await apiFetch<any[]>("/api/tenders/facets"); const b = tenders.map((t: any) => t.department); return [...new Set([...(a ?? []).map((x) => x.name), ...b].filter(Boolean) as string[])].sort(); } });
+  const depts = useQuery({ queryKey: ["dept-options"], queryFn: async () => { const tenders = await apiFetch<any[]>("/api/tenders/facets"); const b = tenders.map((t: any) => t.department); return [...new Set(b.filter(Boolean) as string[])].sort(); } });
   const [f, setF] = useState<Form>(() => ({ reference_no: `GEM/${new Date().getFullYear()}/${Math.floor(100000 + Math.random() * 900000)}`, title: "", department: "", category: "", description: "", closing_at: "", estimated_value: "", emd_amount: "", eligibility: "", location: "", requirements: [], commercial: [], atcs: [], rules: [] }));
   const [source, setSource] = useState<DataGovSource | null>(null); const [dgOpen, setDgOpen] = useState(false); const [busy, setBusy] = useState(false); const [confirm, setConfirm] = useState(false);
   const loaded = useRef<string | null>(null);

@@ -41,7 +41,7 @@ function related(log:Log):{label:string;to:string;params?:Record<string,string>}
 function AuditLogs(){
   const {entity}=Route.useSearch();const {language}=useLanguage();const {common,audit:t}=WORKSPACE_TRANSLATIONS[language];
   const et=OFFICER_WORKFLOW_TRANSLATIONS[language].event; const [days,setDays]=useState(30);const [q,setQ]=useState(entity??"");const [mod,setMod]=useState("");const [role,setRole]=useState("");const [sev,setSev]=useState("");const [sel,setSel]=useState<Log|null>(null);const [actions,setActions]=useState<Log|null>(null);const [page,setPage]=useState(1);
-  const logs=useQuery({queryKey:["audit",days],queryFn:async()=>{const data=await apiFetch<any>(`/api/audit?limit=2000`);return data.entries as Log[]}});
+  const logs=useQuery({queryKey:["audit",days],refetchInterval:3000,queryFn:async()=>{const data=await apiFetch<any>(`/api/audit?limit=2000`);return data.entries as Log[]}});
   const all=logs.data??[];const rows=useMemo(()=>all.filter(l=>(!mod||l.entity_type===mod)&&(!role||l.actor_role===role)&&(!sev||sevOf(l)===sev)&&(!q||`${l.actor_email} ${l.action} ${l.summary} ${l.entity_id} ${l.ip_address}`.toLowerCase().includes(q.toLowerCase()))),[all,mod,role,sev,q]);
   const per=10,pages=Math.max(1,Math.ceil(rows.length/per)),shown=rows.slice((page-1)*per,page*per);
   const trend=useMemo(()=>{const m=new Map<string,{d:string;user:number;system:number;security:number}>();for(let i=days-1;i>=0;i--){const d=new Date(Date.now()-i*864e5).toISOString().slice(0,10);m.set(d,{d:d.slice(5),user:0,system:0,security:0})}all.forEach(l=>{const e=m.get(l.created_at.slice(0,10));if(e)e[kindOf(l)]++});return[...m.values()]},[all,days]);

@@ -11,10 +11,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { EmptyState, ErrorState, LoadingState } from "@/components/states/DataStates";
 import { STAGE_LABEL, VERDICT_LABEL, verdictTone } from "@/components/compliance/ComplianceRunView";
-import { runComplianceCheck } from "@/lib/compliance.functions";
 import { fmtDateTime } from "@/lib/procurement";
 import { RULES_SUMMARY } from "@/lib/compliance-meta";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_authenticated/officer/ai-compliance/")({
   head: () => ({
@@ -37,25 +37,27 @@ function AiCompliance() {
   const [q, setQ] = useState(""); const [cat, setCat] = useState(""); const [scoreBand, setScoreBand] = useState(""); const [vendor, setVendor] = useState("");
   const [picked, setPicked] = useState<string[]>([]); const [open, setOpen] = useState(false);
   const qc = useQueryClient();
-  const runs = useQuery({ queryKey: ["compliance-runs", "all"], refetchInterval: 5000, queryFn: async () => { const { data, error } = await supabase.from("compliance_runs").select("id,file_name,status,score,verdict,officer_status,created_at,vendor_user_id,bid_id,tender:tenders(reference_no,title,category),compliance_results(passed,severity)").order("created_at", { ascending: false }).limit(500); if (error) throw error; return data as unknown as Row[]; } });
-  const vendorNames = useQuery({ queryKey: ["vendor-names"], queryFn: async () => { const { data, error } = await supabase.from("vendors").select("owner_id,legal_name"); if (error) throw error; return Object.fromEntries(data.map((v) => [v.owner_id, v.legal_name])) as Record<string, string>; } });
+  const runs = useQuery({ queryKey: ["compliance-runs", "all"], refetchInterval: 5000, queryFn: async () => { return apiFetch<Row[]>("/api/verification-runs"); } });
+  const vendorNames = useQuery({ queryKey: ["vendor-names"], queryFn: async () => { const data = await apiFetch<any[]>("/api/admin/vendors"); return Object.fromEntries(data.map((v) => [v.owner_id, v.legal_name])) as Record<string, string>; } });
   const all = runs.data ?? [];
-  const eff = (r: Row) => r.officer_status && r.officer_status !== "clarification" ? r.officer_status : r.verdict;
+  const eff = (r: Row) => r.officer_status && r.officer_status !== "clarification" && r.officer_status !== "pending" ? r.officer_status : r.verdict;
   const rows = useMemo(() => all.filter((r) => (!tab || eff(r) === tab) && (!cat || r.tender?.category === cat) && (!vendor || (vendorNames.data?.[r.vendor_user_id] ?? "").toLowerCase().includes(vendor.toLowerCase()))
     && (!scoreBand || (r.score != null && (scoreBand === "85" ? r.score >= 85 : scoreBand === "60" ? r.score >= 60 && r.score < 85 : r.score < 60)))
     && (!q || `${r.file_name} ${r.tender?.reference_no ?? ""} ${r.tender?.title ?? ""} ${vendorNames.data?.[r.vendor_user_id] ?? ""}`.toLowerCase().includes(q.toLowerCase()))), [all, tab, cat, vendor, scoreBand, q, vendorNames.data]);
   const n = (v: string) => all.filter((r) => eff(r) === v).length;
-  const bulk = useMutation({ mutationFn: async () => { const { data: u } = await supabase.auth.getUser(); const { error } = await supabase.from("compliance_runs").update({ officer_status: "needs_review", officer_note: "Bulk referral from compliance queue", officer_id: u.user?.id ?? null, officer_decided_at: new Date().toISOString() }).in("id", picked); if (error) throw error; }, onSuccess: () => { toast.success("Selected checks referred to Human Review"); setPicked([]); qc.invalidateQueries({ queryKey: ["compliance-runs"] }); }, onError: (e: Error) => toast.error(e.message) });
+  const bulk = useMutation({ mutationFn: async () => { await apiFetch("/api/verification-runs/bulk-refer", { method: "POST", body: JSON.stringify(picked) }); }, onSuccess: () => { toast.success("Selected checks referred to Human Review"); setPicked([]); qc.invalidateQueries({ queryKey: ["compliance-runs"] }); }, onError: (e: Error) => toast.error(e.message) });
   function exportCsv() { const lines = [["Tender", "Vendor", "Document", "Date", "Score", "Verdict", "Officer"].join(","), ...rows.map((r) => [r.tender?.reference_no ?? "", vendorNames.data?.[r.vendor_user_id] ?? "", r.file_name, r.created_at, r.score ?? "", r.verdict ?? "", r.officer_status ?? ""].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))]; const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" })); a.download = "ai-compliance.csv"; a.click(); }
 
   const kpis = [["Total Submissions", all.length, FileText, "text-primary bg-primary/10"], ["Compliant", n("compliant"), CheckCircle2, "text-success bg-success/10"], ["Needs Review", n("needs_review"), Clock, "text-warning bg-warning/15"], ["Non-Compliant", n("non_compliant"), XCircle, "text-destructive bg-destructive/10"]] as const;
   const pie = [{ name: "Compliant", v: n("compliant"), c: "var(--success)" }, { name: "Needs Review", v: n("needs_review"), c: "var(--warning)" }, { name: "Non-Compliant", v: n("non_compliant"), c: "var(--destructive)" }];
 
-  return <div className="grid gap-3 2xl:grid-cols-[1fr_280px]">
+  return <div className="grid gap-3 xl:grid-cols-[1fr_280px]">
     <div className="min-w-0 space-y-3">
       <nav className="flex items-center gap-1 text-xs text-muted-foreground"><ChevronLeft className="h-3.5 w-3.5" /><Link to="/officer/dashboard" className="text-primary">Dashboard</Link> › AI Compliance Check</nav>
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4"><div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary"><Cpu className="h-6 w-6" /></div><div><h1 className="font-display text-2xl font-bold">AI Compliance Check</h1><p className="text-sm text-muted-foreground">Automatically verify vendor submissions against GeM rules, technical specifications and documents.</p></div><Button className="ml-auto" onClick={() => setOpen(true)}><Plus className="mr-1 h-4 w-4" />Run New Check</Button></div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{kpis.map(([l, v, I, tone]) => <div key={l} className="flex items-center gap-3 rounded-xl border border-border bg-card p-4"><div className={cn("flex h-11 w-11 items-center justify-center rounded-lg", tone)}><I className="h-5 w-5" /></div><div><p className="text-xs text-muted-foreground">{l}</p><p className="text-2xl font-bold">{v}</p><p className="text-[10px] text-muted-foreground">{l === "Total Submissions" ? "All checks" : `${all.length ? Math.round((v / all.length) * 100) : 0}% of total`}</p></div></div>)}</div>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{kpis.map(([l, v, I, tone]) => {
+        return <div key={l as string} className="flex items-center gap-3 rounded-xl border border-border bg-card p-4 text-left"><div className={cn("flex h-11 w-11 items-center justify-center rounded-lg", tone as string)}><I className="h-5 w-5" /></div><div><p className="text-xs text-muted-foreground">{l as string}</p><p className="text-2xl font-bold">{v as number}</p><p className="text-[10px] text-muted-foreground">{l === "Total Submissions" ? "All checks" : `${all.length ? Math.round(((v as number) / all.length) * 100) : 0}% of total`}</p></div></div>;
+      })}</div>
       <div className="rounded-xl border border-border bg-card">
         <div className="flex gap-1 border-b border-border px-3">{([["", "All Submissions", all.length], ["compliant", "Compliant", n("compliant")], ["needs_review", "Needs Review", n("needs_review")], ["non_compliant", "Non-Compliant", n("non_compliant")]] as const).map(([k, l, c]) => <button key={k} onClick={() => setTab(k)} className={cn("flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-xs font-medium", tab === k ? "border-primary text-primary" : "border-transparent text-muted-foreground")}>{l}<span className="rounded-full bg-muted px-1.5 text-[10px]">{c}</span></button>)}</div>
         <div className="flex flex-wrap gap-2 p-3"><div className="relative min-w-56 flex-1"><Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="h-8 pl-8 text-xs" placeholder="Search by tender ID, vendor name, product, or document…" value={q} onChange={(e) => setQ(e.target.value)} /></div><Button size="sm" variant="outline" onClick={exportCsv}><Download className="mr-1 h-3.5 w-3.5" />Export</Button></div>
@@ -88,11 +90,14 @@ function AiCompliance() {
 }
 
 function RunNewCheck({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
-  const navigate = useNavigate(); const qc = useQueryClient(); const run = runComplianceCheck;
-  const docs = useQuery({ queryKey: ["submitted-bid-docs"], enabled: open, queryFn: async () => { const { data, error } = await supabase.from("bid_documents").select("id,name,file_path,sha256,size_bytes,mime_type,bid:bids!inner(id,status,vendor_user_id,tender_id,tender:tenders(reference_no,title))").neq("bid.status", "draft").order("created_at", { ascending: false }); if (error) throw error; return data; } });
+  const navigate = useNavigate(); const qc = useQueryClient();
+  const docs = useQuery({ queryKey: ["submitted-bid-docs"], enabled: open, queryFn: async () => { const data = await apiFetch<any[]>("/api/documents/all"); return data; } });
   const start = useMutation({
-    mutationFn: async (d: NonNullable<typeof docs.data>[number]) => { const b = d.bid as unknown as { id: string; vendor_user_id: string; tender_id: string }; const { data, error } = await supabase.from("compliance_runs").insert({ vendor_user_id: b.vendor_user_id, bid_id: b.id, tender_id: b.tender_id, bid_document_id: d.id, file_path: d.file_path, file_name: d.name, sha256: d.sha256, size_bytes: d.size_bytes }).select("id").single(); if (error) throw error; return data.id; },
-    onSuccess: (id) => { onOpenChange(false); navigate({ to: "/officer/ai-compliance/$runId", params: { runId: id } }); run({ data: { runId: id } }).then(() => toast.success("Compliance check completed")).catch((e: Error) => toast.error(e.message)).finally(() => qc.invalidateQueries({ queryKey: ["compliance-run", id] })); },
+    mutationFn: async (d: NonNullable<typeof docs.data>[number]) => { 
+      const res = await apiFetch<{id: number}>(`/api/verification-runs`, { method: "POST", body: JSON.stringify({ bid_document_id: d.id }) });
+      return res.id;
+    },
+    onSuccess: (id) => { onOpenChange(false); navigate({ to: "/officer/ai-compliance/$runId", params: { runId: String(id) } }); toast.success("Compliance check started"); },
     onError: (e: Error) => toast.error(e.message),
   });
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>Run New Check</DialogTitle></DialogHeader><p className="text-xs text-muted-foreground">Choose a PDF submitted with a bid. The rule engine runs first; AI reasoning is used only where rules cannot decide.</p>

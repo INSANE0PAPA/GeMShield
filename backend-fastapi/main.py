@@ -13,7 +13,8 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from db import engine, get_db
-from models import Base, ComplianceJob, RuleResult, RAGResult
+from models import Base, ComplianceJob, RuleResult, RAGResult, AuditLog
+from auth import get_optional_user, AuthUser
 from orchestrator import run_compliance_check, build_fix_guide
 from data_gov import router as data_gov_router
 from helpdesk import router as helpdesk_router
@@ -27,6 +28,10 @@ from routers.notifications import router as notifications_router
 from routers.reviews import router as reviews_router
 from routers.documents import router as documents_router
 from routers.vendors import router as vendors_router
+from routers.verification import router as verification_router
+from routers.administration import router as administration_router
+from routers.reports import router as reports_router
+from routers.audit import router as audit_router_mod
 UPLOAD_DIR   = Path(__file__).parent / "uploads"
 MAX_BYTES    = 20 * 1024 * 1024     
 ALLOWED_EXTS = {".pdf"}
@@ -57,6 +62,8 @@ app.include_router(helpdesk_router)
 app.include_router(gemini_compliance_router)
 app.include_router(supabase_compliance_router)
 app.include_router(tenders_router)
+app.include_router(administration_router)
+app.include_router(reports_router)
 app.include_router(bids_router)
 app.include_router(profiles_router)
 app.include_router(audit_router)
@@ -64,6 +71,7 @@ app.include_router(notifications_router)
 app.include_router(reviews_router)
 app.include_router(documents_router)
 app.include_router(vendors_router)
+app.include_router(verification_router)
 
 @app.on_event("startup")
 def on_startup():
@@ -93,6 +101,7 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: AuthUser | None = Depends(get_optional_user),
 ):
     try:
         contents = await file.read()
@@ -107,12 +116,25 @@ async def upload_document(
         raise HTTPException(500, f"Could not save file: {e}")
     log.info("Uploaded '%s' → '%s' (%d bytes)", file.filename, safe_name, len(contents))
     job = ComplianceJob(
-        filename     = file.filename,
+        file_name    = file.filename,
         stored_path  = str(dest_path),
         status       = "queued",
         created_at   = datetime.now(timezone.utc),
     )
     db.add(job)
+    db.flush()
+    if user:
+        audit = AuditLog(
+            id=str(uuid.uuid4()),
+            actor_id=user.user_id,
+            actor_email=user.email,
+            actor_role=user.role,
+            action="upload_compliance_doc",
+            entity_type="ComplianceJob",
+            entity_id=str(job.id),
+            summary=f"Uploaded '{file.filename}' for compliance check",
+        )
+        db.add(audit)
     db.commit()
     db.refresh(job)
     background_tasks.add_task(run_compliance_check, job.id, str(dest_path))
@@ -120,7 +142,7 @@ async def upload_document(
     return {
         "job_id":   job.id,
         "status":   job.status,
-        "filename": job.filename,
+        "file_name": job.file_name,
         "message":  "File accepted. Compliance check running in background.",
     }
 @app.get("/jobs/{job_id}/status", summary="Poll job processing status")
@@ -136,7 +158,7 @@ def get_job_status(job_id: int, db: Session = Depends(get_db)):
     response = {
         "job_id":   job.id,
         "status":   job.status,
-        "filename": job.filename,
+        "file_name": job.file_name,
         "score":    job.score,
         "verdict":  job.verdict,
         "created_at":   job.created_at.isoformat() if job.created_at else None,
@@ -200,7 +222,7 @@ def get_job_results(job_id: int, db: Session = Depends(get_db)):
     return {
         "job": {
             "id":           job.id,
-            "filename":     job.filename,
+            "file_name":     job.file_name,
             "status":       job.status,
             "score":        job.score,
             "verdict":      job.verdict,
@@ -244,7 +266,7 @@ def list_jobs(
         "jobs":  [
             {
                 "id":         j.id,
-                "filename":   j.filename,
+                "file_name":   j.file_name,
                 "status":     j.status,
                 "score":      j.score,
                 "verdict":    j.verdict,

@@ -3,7 +3,6 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, CalendarDays, Check, CheckCircle2, CircleDashed, FileText, Info, Paperclip, Pencil, Send, Upload, XCircle } from "lucide-react";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +13,8 @@ import { useSession } from "@/hooks/useSession";
 import { cn } from "@/lib/utils";
 import { APPLY_STAGES, detailsOf, fmtDateTime, inr, sha256File, tenderState, timeLeft, type ApplyStage } from "@/lib/procurement";
 import { apiFetch } from "@/lib/api";
+
+const API_URL = import.meta.env["VITE_API_URL"] || "http://localhost:8000";
 
 export const Route = createFileRoute("/_authenticated/vendor/tenders/$tenderId/apply/$stage")({
   head: () => ({ meta: [{ title: "Apply for Tender — GeMShield" }, { name: "description", content: "Four-stage bid application: basic information, documents, technical & financial bid, review & submit." }, { property: "og:title", content: "Apply for Tender — GeMShield" }, { property: "og:description", content: "Four-stage bid application." }, { property: "og:type", content: "website" }, { name: "twitter:card", content: "summary" }] }),
@@ -28,16 +29,25 @@ const ADDITIONAL = [["past_performance", "Past Performance Certificates", "PDF (
 type App = Partial<Record<"bidder_type" | "company" | "cin" | "gstin" | "pan" | "rep_name" | "designation" | "email" | "phone" | "technical_proposal" | "unit_price" | "quantity" | "gst", string>>;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/; const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 
+async function getAuthToken(): Promise<string | null> {
+  try {
+    const { supabase } = await import("@/integrations/supabase/client");
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token ?? null;
+  } catch { return null; }
+}
+
 function Apply() {
   const { tenderId, stage: raw } = Route.useParams(); const stage = (APPLY_STAGES as readonly string[]).includes(raw) ? (raw as ApplyStage) : null;
   const { session } = useSession(); const uid = session?.user.id; const navigate = useNavigate(); const qc = useQueryClient();
   const q = useQuery({ queryKey: ["apply", tenderId, uid], enabled: Boolean(uid), queryFn: async () => {
-    const [tender, { data: bid, error: e2 }, { data: vendor, error: e3 }, { data: profile }] = await Promise.all([
+    const [tender, bid, vendor, profile] = await Promise.all([
       apiFetch<any>(`/api/tenders/${tenderId}`).catch(() => null),
-      supabase.from("bids").select("*, bid_documents(*)").eq("tender_id", tenderId).eq("vendor_user_id", uid!).maybeSingle(),
-      supabase.from("vendors").select("legal_name,gstin,pan,contact_email,contact_phone,mobile_number").eq("owner_id", uid!).maybeSingle(),
-      supabase.from("profiles").select("full_name,email,phone,designation").eq("id", uid!).maybeSingle()]);
-    if (e2 || e3) throw e2 ?? e3; return { tender, bid, vendor, profile };
+      apiFetch<any>(`/api/bids/by-tender/${tenderId}`).catch(() => null),
+      apiFetch<any>(`/api/vendors/me`).catch(() => null),
+      apiFetch<any>(`/api/profiles/me`).catch(() => null),
+    ]);
+    return { tender, bid, vendor, profile };
   } });
   const [app, setApp] = useState<App>({}); const [declared, setDeclared] = useState(false); const [busy, setBusy] = useState(false); const [, tick] = useState(0);
   const loaded = useRef(false);
@@ -65,8 +75,11 @@ function Apply() {
 
   const ensureBid = async (nextStage: ApplyStage) => {
     const payload = { application: app as never, quoted_amount: total > 0 ? total : null, notes: app.technical_proposal || null, stage: nextStage };
-    if (bid?.id) { const { error } = await supabase.from("bids").update(payload).eq("id", bid.id); if (error) throw error; return bid.id; }
-    const { data, error } = await supabase.from("bids").insert({ tender_id: tenderId, ...payload }).select("id").single(); if (error) throw error; return data.id;
+    const result = await apiFetch<any>(`/api/bids/for-tender/${tenderId}`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    return result.id;
   };
   const go = async (target: ApplyStage | "draft" | "submit") => {
     if (target !== "draft" && APPLY_STAGES.indexOf(target as ApplyStage) > idx || target === "submit") {
@@ -78,7 +91,7 @@ function Apply() {
     try {
       const id = await ensureBid(target === "draft" || target === "submit" ? stage : target);
       if (target === "submit") {
-        const { error } = await supabase.from("bids").update({ status: "submitted", submitted_at: new Date().toISOString() }).eq("id", id); if (error) throw error;
+        await apiFetch(`/api/bids/${id}/submit`, { method: "POST" });
         await qc.invalidateQueries({ queryKey: ["bids"] }); toast.success("Bid submitted successfully"); navigate({ to: "/vendor/my-bids/$bidId", params: { bidId: id } }); return;
       }
       await qc.invalidateQueries({ queryKey: ["apply"] });
@@ -92,10 +105,20 @@ function Apply() {
     if (!/\.(pdf|docx|xlsx|zip)$/i.test(file.name)) return toast.error("Only PDF, DOCX, XLSX or ZIP files are allowed.");
     setBusy(true);
     try {
-      const id = await ensureBid("documents"); const path = `${uid}/${id}/${docType}-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-      const { error: se } = await supabase.storage.from("bid-documents").upload(path, file, file.type ? { contentType: file.type } : {}); if (se) throw se;
-      const old = docOf(docType); if (old) await supabase.from("bid_documents").delete().eq("id", old.id);
-      const { error } = await supabase.from("bid_documents").insert({ bid_id: id, doc_type: docType, name: file.name, file_path: path, mime_type: file.type || null, size_bytes: file.size, sha256: await sha256File(file) }); if (error) throw error;
+      const id = await ensureBid("documents");
+      const token = await getAuthToken();
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("doc_type", docType);
+      const response = await fetch(`${API_URL}/api/bids/${id}/documents`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error((body as { detail?: string }).detail ?? "Upload failed");
+      }
       await qc.invalidateQueries({ queryKey: ["apply"] }); toast.success(`${file.name} uploaded`);
     } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
     return;

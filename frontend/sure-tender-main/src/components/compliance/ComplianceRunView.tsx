@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Bot, CheckCircle2, ChevronLeft, ChevronRight, Clock, Download, ExternalLink, FileSearch, FileText, History, Lightbulb, ListChecks, Loader2, MinusCircle, Search, ShieldCheck, X, XCircle } from "lucide-react";
@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { ErrorState, LoadingState, EmptyState } from "@/components/states/DataStates";
 import { fmtBytes, fmtDateTime } from "@/lib/procurement";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
 
 export const RUN_STAGES = ["queued", "processing", "extracting", "rule_verification", "ai_analysis", "scoring", "saving", "completed"] as const;
 export const STAGE_LABEL: Record<string, string> = { queued: "Queued", processing: "Processing", extracting: "Extracting text", rule_verification: "Rule verification", ai_analysis: "AI analysis", scoring: "Scoring", saving: "Saving", completed: "Completed", failed: "Failed" };
@@ -38,8 +39,7 @@ export function useRun(runId: string | undefined) {
     queryKey: ["compliance-run", runId], enabled: Boolean(runId),
     refetchInterval: (q) => { const s = (q.state.data as Run | null | undefined)?.status; return s && s !== "completed" && s !== "failed" ? 1200 : false; },
     queryFn: async () => {
-      const { data, error } = await supabase.from("compliance_runs").select("*, tender:tenders(id,title,reference_no,department,category,details), bid:bids(submitted_at,status)").eq("id", runId!).maybeSingle();
-      if (error) throw error; return data as unknown as Run | null;
+      return apiFetch<Run & { rule_results?: Result[] }>(`/api/verification-runs/${runId}`);
     },
   });
 }
@@ -57,29 +57,56 @@ export function ComplianceRunView({ runId, audience, initialTab }: { runId: stri
   const qc = useQueryClient();
   const runQ = useRun(runId);
   const run = runQ.data;
-  const resQ = useQuery({ queryKey: ["compliance-results", runId], enabled: run?.status === "completed", queryFn: async () => { const { data, error } = await supabase.from("compliance_results").select("*").eq("run_id", runId).order("position"); if (error) throw error; return data as Result[]; } });
-  const histQ = useQuery({ queryKey: ["compliance-history", runId, run?.status, run?.officer_status], enabled: Boolean(run), queryFn: async () => { const { data, error } = await supabase.from("audit_logs").select("id,action,summary,actor_role,actor_email,created_at").eq("entity_id", runId).order("created_at", { ascending: false }); if (error) throw error; return data; } });
+  const resQ = useQuery({ queryKey: ["compliance-results", runId], enabled: Boolean(run?.rule_results), queryFn: async () => run?.rule_results ?? [] });
+  const histQ = useQuery({ queryKey: ["compliance-history", runId, run?.status, run?.officer_status], enabled: Boolean(run), refetchInterval: 3000, queryFn: async () => { const data = await apiFetch<{entries: any[]}>(`/api/audit?entity_id=${runId}`); return data.entries; } });
   const [tab, setTab] = useState<"req" | "doc" | "missing" | "ai" | "history">((["req","doc","missing","ai","history"].includes(initialTab ?? "") ? initialTab : "req") as "req");
   const [sel, setSel] = useState<string | null>(null);
   const [q, setQ] = useState(""); const [cat, setCat] = useState(""); const [st, setSt] = useState("");
   const [page, setPage] = useState(1);
   const results = resQ.data ?? [];
-  const filtered = useMemo(() => results.filter((r) => (!q || `${r.rule_name} ${r.expected}`.toLowerCase().includes(q.toLowerCase())) && (!cat || r.category === cat) && (!st || r.status === st)), [results, q, cat, st]);
+  const filtered = useMemo(() => results.filter((r) => (!q || `${r.rule_name} ${r.expected}`.toLowerCase().includes(q.toLowerCase())) && (!cat || r.category === cat) && (!st || (st === "non_compliant" ? (r.status === "non_compliant" || r.status === "missing") : r.status === st))), [results, q, cat, st]);
   const counts = { compliant: results.filter((r) => r.status === "compliant").length, attention: results.filter((r) => r.status === "needs_attention").length, non: results.filter((r) => r.status === "non_compliant" || r.status === "missing").length };
   const selected = results.find((r) => r.id === sel) ?? null;
   const pct = (n: number) => (results.length ? Math.round((n / results.length) * 100) : 0);
+  const calculatedRuleScore = pct(counts.compliant);
+  const displayRuleScore = run?.rule_score ?? calculatedRuleScore;
+  const displayScore = run?.score ?? (displayRuleScore + (run?.rag_delta ?? 0));
 
-  const docUrl = useQuery({ queryKey: ["run-doc-url", run?.file_path], enabled: Boolean(run?.file_path), staleTime: 240_000, queryFn: async () => { const { data, error } = await supabase.storage.from("bid-documents").createSignedUrl(run!.file_path, 300); if (error) throw error; return data.signedUrl; } });
+  const docUrl = useQuery({ queryKey: ["run-doc-url", run?.id], enabled: Boolean(run?.id), staleTime: 240_000, queryFn: async () => {
+    const { supabase } = await import("@/integrations/supabase/client");
+    const { data: { session } } = await supabase.auth.getSession();
+    const res = await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/documents/compliance-job/${run!.id}/pdf`, {
+      headers: { "Authorization": `Bearer ${session?.access_token}` }
+    });
+    if (!res.ok) throw new Error("Failed to load document");
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  } });
 
   const decide = useMutation({
     mutationFn: async () => {
-      const { data: u } = await supabase.auth.getUser();
-      const { error } = await supabase.from("compliance_runs").update({ officer_status: "needs_review", officer_note: "Referred from compliance evidence review", officer_id: u.user?.id ?? null, officer_decided_at: new Date().toISOString() }).eq("id", runId);
-      if (error) throw error;
+      return apiFetch(`/api/verification-runs/${runId}/refer`, { method: "POST" });
     },
     onSuccess: () => { toast.success("Referred to Human Review"); qc.invalidateQueries({ queryKey: ["compliance-run", runId] }); qc.invalidateQueries({ queryKey: ["compliance-runs"] }); },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  const generateInsights = useMutation({
+    mutationFn: async () => {
+      return apiFetch(`/api/verification-runs/${runId}/insights`, { method: "POST" });
+    },
+    onSuccess: () => {
+      toast.success("AI Insights generated successfully");
+      qc.invalidateQueries({ queryKey: ["compliance-run", runId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  useEffect(() => {
+    if (tab === "ai" && run && !run.ai_summary && !generateInsights.isPending && !generateInsights.isSuccess) {
+      generateInsights.mutate();
+    }
+  }, [tab, run, generateInsights.isPending, generateInsights.isSuccess, generateInsights]);
 
   if (runQ.isPending) return <LoadingState label="Loading compliance check…" />;
   if (runQ.error) return <ErrorState error={runQ.error} onRetry={() => runQ.refetch()} />;
@@ -102,10 +129,10 @@ export function ComplianceRunView({ runId, audience, initialTab }: { runId: stri
 
     {run.status !== "completed" ? <JobProgress run={run} /> : <>
       <div className="grid gap-3 lg:grid-cols-[1.1fr_1.4fr_1fr]">
-        <div className="flex items-center gap-4 rounded-xl border border-border bg-card p-4"><div><p className="mb-1 text-sm font-semibold">Overall Compliance Score</p><ScoreDonut score={run.score} verdict={run.verdict} /></div>
-          <div className="space-y-2"><span className={cn("inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-semibold", verdictTone(run.verdict))}>{VERDICT_LABEL[run.verdict ?? ""] ?? run.verdict}</span><p className="text-xs text-muted-foreground">Rule engine {run.rule_score ?? "—"}% {run.rag_delta ? `· AI adjustment ${run.rag_delta > 0 ? "+" : ""}${run.rag_delta}` : ""}</p><p className="text-[11px] text-muted-foreground">{run.rules_version} · {run.page_count ?? "—"} pages</p></div></div>
+        <div className="flex items-center gap-4 rounded-xl border border-border bg-card p-4"><div><p className="mb-1 text-sm font-semibold">Overall Compliance Score</p><ScoreDonut score={displayScore} verdict={run.verdict} /></div>
+          <div className="space-y-2"><span className={cn("inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-semibold", verdictTone(run.verdict))}>{VERDICT_LABEL[run.verdict ?? ""] ?? run.verdict}</span><p className="text-xs text-muted-foreground">Rule engine {displayRuleScore}% {run.rag_delta ? `· AI adjustment ${run.rag_delta > 0 ? "+" : ""}${run.rag_delta}` : ""}</p><p className="text-[11px] text-muted-foreground">{run.rules_version}</p></div></div>
         <div className="rounded-xl border border-border bg-card p-4"><p className="mb-3 text-sm font-semibold">Requirement Summary</p><div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {[["Compliant", counts.compliant, "success", CheckCircle2], ["Needs Attention", counts.attention, "warning", AlertTriangle], ["Non-Compliant", counts.non, "destructive", XCircle], ["Total Requirements", results.length, "primary", ListChecks]].map(([l, n, tone, Icon]) => { const I = Icon as typeof CheckCircle2; return <div key={l as string} className={cn("rounded-lg border p-3", TONE[tone as string]!.box)}><div className="flex items-center gap-2"><I className={cn("h-5 w-5", TONE[tone as string]!.text)} /><span className="text-xl font-bold">{n as number}</span></div><p className="mt-1 text-[11px] font-semibold">{l as string}</p><p className="text-[10px] text-muted-foreground">{l === "Total Requirements" ? "Rules + tender specs" : `${pct(n as number)}% of requirements`}</p></div>; })}</div></div>
+          {[["Compliant", counts.compliant, "success", CheckCircle2, "compliant"], ["Needs Attention", counts.attention, "warning", AlertTriangle, "needs_attention"], ["Non-Compliant", counts.non, "destructive", XCircle, "non_compliant"], ["Total Requirements", results.length, "primary", ListChecks, ""]].map(([l, n, tone, Icon, statusVal]) => { const I = Icon as typeof CheckCircle2; return <div key={l as string} className={cn("rounded-lg border p-3", TONE[tone as string]!.box)}><div className="flex items-center gap-2"><I className={cn("h-5 w-5", TONE[tone as string]!.text)} /><span className="text-xl font-bold">{n as number}</span></div><p className="mt-1 text-[11px] font-semibold">{l as string}</p><p className="text-[10px] text-muted-foreground">{l === "Total Requirements" ? "Rules + tender specs" : `${pct(n as number)}% of requirements`}</p></div>; })}</div></div>
         <div className="rounded-xl border border-border bg-card p-4"><p className="mb-2 text-sm font-semibold">Government Review Status</p><div className="rounded-lg border border-warning/30 bg-warning/10 p-3"><p className="flex items-center gap-2 text-sm font-semibold"><Clock className="h-4 w-4 text-warning" />{reviewText}</p><p className="mt-1 text-[11px] text-muted-foreground">{run.officer_note ? `Officer note: ${run.officer_note}` : "AI results are advisory. The procurement officer makes the final decision; low-confidence items go to human review, never auto-rejected."}</p>{run.officer_decided_at && <p className="mt-1 text-[10px] text-muted-foreground">{fmtDateTime(run.officer_decided_at)}</p>}</div></div>
       </div>
 
@@ -124,7 +151,7 @@ export function ComplianceRunView({ runId, audience, initialTab }: { runId: stri
               <tbody>{filtered.map((r, i) => <tr key={r.id} className={cn("border-t border-border", sel === r.id && "bg-primary/5")}><td className="px-3 py-2">{i + 1}</td><td className="px-3 py-2 font-medium">{r.rule_name}<span className="block text-[10px] text-muted-foreground">{r.rule_code} · {r.severity}</span></td><td className="px-3 py-2">{r.category}</td><td className="max-w-56 px-3 py-2 text-muted-foreground">{r.expected}</td><td className="px-3 py-2"><StatusPill status={r.status} /></td>
                 <td className="px-3 py-2">{r.evidence_page ? <button className="flex items-center gap-1 text-left text-primary hover:underline" onClick={() => openPage(r.evidence_page)}><FileText className="h-3.5 w-3.5" />{run.file_name.slice(0, 22)}<span className="text-muted-foreground">· Page {r.evidence_page}</span></button> : <span className="text-destructive">Not Found</span>}</td>
                 <td className="px-3 py-2"><Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setSel(r.id)}>View</Button></td></tr>)}
-                {!filtered.length && <tr><td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">No requirements match these filters.</td></tr>}</tbody></table></div>
+                {!filtered.length && <tr><td colSpan={7} className="px-3 py-12 text-center text-muted-foreground"><div className="flex flex-col items-center justify-center"><Search className="h-8 w-8 mb-2 opacity-20" />Nothing is present.</div></td></tr>}</tbody></table></div>
             <p className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">Showing {filtered.length} of {results.length} requirements</p>
           </div>
           {selected && <RequirementPanel r={selected} fileName={run.file_name} onClose={() => setSel(null)} onPage={openPage} onNav={(d) => { const i = filtered.findIndex((x) => x.id === selected.id); const n = filtered[i + d]; if (n) setSel(n.id); }} />}
@@ -143,12 +170,24 @@ export function ComplianceRunView({ runId, audience, initialTab }: { runId: stri
             {results.filter((r) => !r.passed).map((r, i) => <tr key={r.id} className="border-t border-border"><td className="px-3 py-2">{i + 1}</td><td className="px-3 py-2 font-medium">{r.rule_name}</td><td className="px-3 py-2">{r.status === "missing" ? "Missing" : "Mismatch"}</td><td className="max-w-72 px-3 py-2 text-muted-foreground">{r.suggestion}</td><td className="px-3 py-2 capitalize">{r.severity}</td><td className="px-3 py-2"><StatusPill status={r.status} /></td><td className="px-3 py-2"><Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setSel(r.id); setTab("req"); }}>View Requirement</Button></td></tr>)}
             {!results.some((r) => !r.passed) && <tr><td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">No missing or mismatched items.</td></tr>}</tbody></table></div></div>}
 
-        {tab === "ai" && <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr]"><div className="space-y-3"><div className="flex gap-4 rounded-xl border border-border bg-card p-4"><ScoreDonut score={run.score} verdict={run.verdict} size={100} /><div><p className="text-sm font-semibold">AI Compliance Summary</p><p className="mt-1 text-xs text-muted-foreground">{run.ai_summary || "No AI summary was produced for this run."}</p></div></div>
+        {tab === "ai" && <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr]"><div className="space-y-3"><div className="flex gap-4 rounded-xl border border-border bg-card p-4"><ScoreDonut score={displayScore} verdict={run.verdict} size={100} /><div><p className="text-sm font-semibold">AI Compliance Summary</p>
+          {generateInsights.isPending ? <p className="mt-2 text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating real-time insights...</p> :
+            <p className="mt-1 text-xs text-muted-foreground">{run.ai_summary || "No AI summary was produced for this run."}</p>}
+          </div></div>
           <div className="rounded-xl border border-border bg-card p-4"><p className="mb-2 text-sm font-semibold">Detailed AI Insights</p><ul className="space-y-2">{results.filter((r) => r.ai_reason).map((r) => <li key={r.id} className="flex items-start gap-2 text-xs"><StatusPill status={r.status} /><div><p className="font-semibold">{r.rule_name}</p><p className="text-muted-foreground">{r.ai_reason}</p></div></li>)}{!results.some((r) => r.ai_reason) && <li className="text-xs text-muted-foreground">AI reasoning was only needed where rules could not decide; none recorded for this run.</li>}</ul></div></div>
           <div className="space-y-3"><div className="rounded-xl border border-border bg-card p-4"><p className="mb-2 text-sm font-semibold">Recommendations</p><ol className="space-y-2">{recs.map((t, i) => <li key={i} className="flex gap-2 text-xs"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary text-[10px] font-bold text-primary-foreground">{i + 1}</span>{t}</li>)}{!recs.length && <li className="text-xs text-muted-foreground">No recommendations.</li>}</ol></div>
             <div className="rounded-xl border border-border bg-primary/5 p-4"><p className="flex items-center justify-between text-sm font-semibold">AI Confidence <span className="text-lg">{run.ai_confidence != null ? `${Math.round(run.ai_confidence * 100)}%` : "—"}</span></p><p className="mt-1 text-[11px] text-muted-foreground">Advisory only. Items below confidence thresholds are flagged for human review.</p></div></div></div>}
 
-        {tab === "history" && <div className="rounded-xl border border-border bg-card p-4"><p className="mb-3 text-sm font-semibold">Compliance Analysis Timeline</p>{histQ.isPending ? <LoadingState /> : !histQ.data?.length ? <p className="text-xs text-muted-foreground">No history recorded yet.</p> : <ol className="space-y-4 border-l border-border pl-5">{histQ.data.map((h) => <li key={h.id} className="relative"><span className="absolute -left-[27px] top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary"><ShieldCheck className="h-2.5 w-2.5 text-primary-foreground" /></span><p className="text-xs font-semibold">{h.action}</p><p className="text-[11px] text-muted-foreground">{h.summary}</p><p className="text-[10px] text-muted-foreground">{fmtDateTime(h.created_at)} · {h.actor_role ?? "system"}</p></li>)}</ol>}</div>}
+        {tab === "history" && <div className="rounded-xl border border-border bg-card p-4"><p className="mb-3 text-sm font-semibold">Compliance Analysis Timeline</p>{histQ.isPending ? <LoadingState /> : !histQ.data?.length ? <p className="text-xs text-muted-foreground">No history recorded yet.</p> : <ol className="space-y-4 border-l border-border pl-5">{histQ.data.map((h) => {
+          const text = `${h.action} ${h.summary}`.toLowerCase();
+          const sev = h.metadata?.severity?.toLowerCase();
+          let I = ShieldCheck, box = "bg-primary", iconCol = "text-primary-foreground";
+          if (sev === "critical" || sev === "error" || text.includes("fail") || text.includes("reject") || text.includes("non-compliant") || text.includes("non_compliant") || text.includes("destructive")) { I = XCircle; box = "bg-destructive/10"; iconCol = "text-destructive"; }
+          else if (sev === "warning" || text.includes("warn") || text.includes("review") || text.includes("attention") || text.includes("refer") || text.includes("mismatch") || text.includes("clarification")) { I = AlertTriangle; box = "bg-warning/10"; iconCol = "text-warning"; }
+          else if (sev === "info" || text.includes("success") || text.includes("compliant") || text.includes("approve") || text.includes("complete")) { I = CheckCircle2; box = "bg-success/10"; iconCol = "text-success"; }
+          else { box = "bg-primary/10"; iconCol = "text-primary"; }
+          return <li key={h.id} className="relative"><span className={cn("absolute -left-[27px] top-0.5 flex h-4 w-4 items-center justify-center rounded-full", box)}><I className={cn("h-3 w-3", iconCol)} /></span><p className="text-xs font-semibold">{h.action}</p><p className="text-[11px] text-muted-foreground">{h.summary}</p><p className="text-[10px] text-muted-foreground">{fmtDateTime(h.created_at)} · {h.actor_role ?? "system"}</p></li>;
+        })}</ol>}</div>}
       </>}
     </>}
   </div>;

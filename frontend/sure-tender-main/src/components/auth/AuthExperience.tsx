@@ -60,13 +60,24 @@ export function AuthExperience({ role, mode }: { role: Role; mode: Mode }) {
     let active = true;
     supabase.auth.getUser().then(async ({ data }) => {
       if (!active || !data.user) return;
-      const [{ data: roles }, { data: profile }] = await Promise.all([
-        supabase.from("user_roles").select("role").eq("user_id", data.user.id),
-        supabase.from("profiles").select("account_type,approval_status").eq("id", data.user.id).maybeSingle(),
-      ]);
-      const appRoles = (roles ?? []).map((item)=>item.role as AppRole);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      let appRoles: AppRole[] = [];
+      let profileAccountType = null;
+      if (token) {
+        try {
+          const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/profiles/me`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const profileData = await res.json();
+          appRoles = (profileData.roles ?? []) as AppRole[];
+          profileAccountType = profileData.account_type;
+        } catch (e) {
+          console.error("Failed to fetch profile", e);
+        }
+      }
       if (appRoles.length) navigate({ to: homeRouteForRoles(appRoles), replace:true });
-      else if (profile?.account_type === "officer") {
+      else if (profileAccountType === "officer") {
         await supabase.auth.signOut();
         if (active) setNotice(t.pending);
       }
@@ -81,12 +92,18 @@ export function AuthExperience({ role, mode }: { role: Role; mode: Mode }) {
       if (!isSignup) {
         const { data, error } = await supabase.auth.signInWithPassword({ email: form.email.trim(), password: form.password });
         if (error) throw error;
-        const [{ data: roles }, { data: profile }] = await Promise.all([
-          supabase.from("user_roles").select("role").eq("user_id", data.user.id),
-          supabase.from("profiles").select("account_type,approval_status").eq("id", data.user.id).maybeSingle(),
-        ]);
-        const appRoles = (roles ?? []).map((item)=>item.role as AppRole);
-        if (!appRoles.length && profile?.account_type === "officer") {
+        const token = data.session?.access_token;
+        let appRoles: AppRole[] = [];
+        let profileAccountType = null;
+        if (token) {
+          const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/profiles/me`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const profileData = await res.json();
+          appRoles = (profileData.roles ?? []) as AppRole[];
+          profileAccountType = profileData.account_type;
+        }
+        if (!appRoles.length && profileAccountType === "officer") {
           await supabase.auth.signOut(); setNotice(t.pending); return;
         }
         navigate({ to: homeRouteForRoles(appRoles), replace:true });
